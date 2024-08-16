@@ -2,6 +2,7 @@ import discord
 import os
 from openai import OpenAI
 import json
+from replit import db
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -56,21 +57,23 @@ async def on_message(message):
 
     if client.user in message.mentions:
         channel = message.channel
+        print(channel.id)
+        if not str(channel.id) in db.keys():
+            db[str(channel.id)] = [message]
+        else: 
+            db[str(channel.id)].append(message)
         async with channel.typing():
             chat_history = [{
                 "role": "system",
                 "content": "You are a helpful assistant."
             }]
-            messages = [message async for message in channel.history(limit=123)]
-            chat_history = [{
-                "role": "system",
-                "content": "You are a helpful assistant."
-            }]
+            messages = [message async for message in channel.history(limit=20)]
             for msg in reversed(messages):
                 role = "assistant" if msg.author == client.user else "user"
                 chat_history.append({"role": role, "content": msg.content})
-            print(chat_history)
             response = oAIClient.chat.completions.create(model="gpt-4o-mini", messages=chat_history, tools = tools)
+            db[str(channel.id)].append(response.choices[0].message.content)
+
             if response.choices[0].finish_reason=="tool_calls":
                 
                 
