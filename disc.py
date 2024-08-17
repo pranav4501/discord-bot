@@ -1,8 +1,34 @@
 import discord
 import os
+import psycopg2
+from psycopg2 import sql
 from openai import OpenAI
 import json
-from replit import db
+from timer import add_timer
+
+
+channel_id = 0
+
+conn = psycopg2.connect(
+    dbname=os.getenv("DB_NAME"),
+    user=os.getenv("DB_USER"),
+    password=os.getenv("DB_PASSWORD"),
+    host=os.getenv("DB_HOST"),
+    port=os.getenv("DB_PORT")
+)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS chat_history (
+    id SERIAL PRIMARY KEY,
+    channel_id BIGINT NOT NULL,
+    message_author VARCHAR(100),
+    message_content TEXT,
+    timestamp TIMESTAMPTZ DEFAULT NOW()
+);
+""")
+
+conn.commit()
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -31,18 +57,62 @@ tools = [
                 },
             },
            
+    },
+    {
+        "type":"function",
+        "function":{
+            "name": "add_timer",
+            "description": "Add a timer",
+            "parameters":{
+                "type":"object",
+                "properties":{
+                    "duration":{
+                        "type":"integer",
+                        "description":"The duation of timer in seconds."
+                    }
+                },
+                "required": ["duration"]
+            }
+        }
     }
 ]
-def gen_tool_call_response(response):
-    time = get_current_time()
-    function_call_result_message = {
-        "role": "tool",
-        "content": json.dumps({
-            "time": time
-        }),
-        "tool_call_id": response.choices[0].message.tool_calls[0].id
-    }
+def gen_tool_call_response(response,channel_id):
+    tool_call = response.choices[0].message.tool_calls[0]
+    function_name = tool_call.function.name
+    print(function_name)
+    if function_name == "get_current_time":
+        time = get_current_time()
+        function_call_result_message = {
+            "role": "tool",
+            "content": json.dumps({
+                "time": time
+            }),
+            "tool_call_id": response.choices[0].message.tool_calls[0].id
+        }
+    else:
+        args = json.loads(tool_call.function.arguments)['duration']
+        duration = int(args)
+        print("set timer for "+ str(duration)+ " seconds and channel id - " +str(channel_id))
+        add_timer(duration,channel_id)
+        function_call_result_message = {
+            "role" : "tool",
+            "content": json.dumps({
+                "message": "Timer added successfully for duration"+ str(duration) + " seconds."
+            }),
+            "tool_call_id": response.choices[0].message.tool_calls[0].id
+        }
+                                    
     return function_call_result_message
+
+async def get_chat_history(channel_id, limit=10):
+    cursor.execute(
+        sql.SQL("SELECT message_author, message_content FROM chat_history WHERE channel_id = %s ORDER BY timestamp DESC LIMIT %s"),
+        [channel_id, limit]
+    )
+    rows = cursor.fetchall()
+    chat_history = [{"role": "user" if row[0] != 'assistant' else "assistant", "content": row[1]} for row in rows]
+    chat_history.reverse()  # Ensure messages are in chronological order
+    return chat_history
     
 
 @client.event
@@ -57,29 +127,32 @@ async def on_message(message):
 
     if client.user in message.mentions:
         channel = message.channel
-        print(channel.id)
-        if not str(channel.id) in db.keys():
-            db[str(channel.id)] = [message]
-        else: 
-            db[str(channel.id)].append(message)
+        channel_id = channel.id
+        
         async with channel.typing():
-            chat_history = [{
-                "role": "system",
-                "content": "You are a helpful assistant."
-            }]
-            messages = [message async for message in channel.history(limit=20)]
-            for msg in reversed(messages):
-                role = "assistant" if msg.author == client.user else "user"
-                chat_history.append({"role": role, "content": msg.content})
-            response = oAIClient.chat.completions.create(model="gpt-4o-mini", messages=chat_history, tools = tools)
-            db[str(channel.id)].append(response.choices[0].message.content)
+            cursor.execute(
+                sql.SQL("INSERT INTO chat_history (channel_id, message_author, message_content) VALUES (%s, %s, %s)"),
+                [message.channel.id, message.author.name, message.content]
+            )
+            conn.commit()
 
+            chat_history = await get_chat_history(channel.id)
+            chat_history.insert(0, {"role": "system", "content": "You are a helpful assistant."})
+
+            
+            response = oAIClient.chat.completions.create(model="gpt-4o-mini", messages=chat_history, tools = tools)
+
+            
             if response.choices[0].finish_reason=="tool_calls":
-                
-                
                 chat_history.append(response.choices[0].message)
-                chat_history.append(gen_tool_call_response(response))
+                chat_history.append(gen_tool_call_response(response,channel_id))
                 response = oAIClient.chat.completions.create(model="gpt-4o-mini", messages=chat_history, tools = tools)
+
+            cursor.execute(
+                sql.SQL("INSERT INTO chat_history (channel_id, message_author, message_content) VALUES (%s, %s, %s)"),
+                [channel.id, 'assistant', response.choices[0].message.content]
+            )
+            conn.commit()
             await channel.send(response.choices[0].message.content)
 
 
