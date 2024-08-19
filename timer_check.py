@@ -1,6 +1,6 @@
 import sqlite3
 import schedule
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 from openai import OpenAI
 import discord
 import time
@@ -29,27 +29,25 @@ async def send_expired_timer_message(channel_id):
   response = oAIClient.chat.completions.create(model="gpt-4o-mini", messages=chat_history)  
   print(response.choices[0].message.content)
   await channel.send(response.choices[0].message.content)  
-  
+
 
 def check_timers():
-  conn = sqlite3.connect('timer.db')
-  cursor = conn.cursor()
-  now = datetime.now()
-  cursor.execute('SELECT id, start_time, duration, channel_id FROM timers WHERE status = "running"')
-  timers = cursor.fetchall()
+    conn = sqlite3.connect('timer.db')
+    cursor = conn.cursor()
+    now = datetime.now()
+    cursor.execute('SELECT id, end_time, channel_id FROM timers WHERE status = "running"')
+    timers = cursor.fetchall()
 
-  for timer in timers:
-    start_time = datetime.fromisoformat(timer[1])
-    duration = timer[2]
-    end_time = start_time + timedelta(seconds=duration)
-    channel_id = timer[3]
+    for timer in timers:
+        end_time = datetime.fromisoformat(timer[1])
+        channel_id = timer[2]
 
-    if now >= end_time:
-      cursor.execute('UPDATE timers SET status = "expired" WHERE id = ?', (timer[0],))
-      conn.commit()
-      print(f"Timer {timer[0]} has expired.")
-      asyncio.run_coroutine_threadsafe(send_expired_timer_message(channel_id), client.loop)
-  conn.close()
+        if now >= end_time:
+            cursor.execute('UPDATE timers SET status = "expired" WHERE id = ?', (timer[0],))
+            conn.commit()
+            print(f"Timer {timer[0]} has expired.")
+            asyncio.run_coroutine_threadsafe(send_expired_timer_message(channel_id), client.loop)
+    conn.close()
 
 
 def schedule_check_timers():
@@ -57,7 +55,7 @@ def schedule_check_timers():
   while True:
       schedule.run_pending()
       time.sleep(1)
-    
+
 @client.event
 async def on_ready():
     print(f'We have logged in as {client.user}')
@@ -65,6 +63,3 @@ async def on_ready():
     loop.run_in_executor(None, schedule_check_timers)
 
 client.run(os.getenv("DISCORD_BOT_KEY"))
-
-
-  
